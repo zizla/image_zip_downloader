@@ -1,0 +1,13 @@
+{
+  "name": "image-zip-downloader",
+  "version": "1.0.0",
+  "description": "웹페이지의 이미지를 나열하고 선택한 이미지를 지정한 이름으로 ZIP 다운로드",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "puppeteer-core": "^24.0.0"
+  }
+}

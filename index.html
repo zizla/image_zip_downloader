@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Image ZIP Downloader</title>
+<meta name="description" content="웹페이지의 이미지를 나열하고, 선택한 이미지를 지정한 이름으로 ZIP 파일에 담아 저장합니다.">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1f; --muted: #6b6b70; --line: #e2e2e0;
+    --accent: #2f6bff; --accent-text: #ffffff; --sel: rgba(47,107,255,.14); --danger: #d93a3a;
+    --chip: #efefed; --shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #141416; --panel: #1d1d20; --text: #ececee; --muted: #9a9aa2; --line: #2e2e33;
+      --accent: #5b8cff; --sel: rgba(91,140,255,.2); --chip: #2a2a2e; --shadow: none; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 20px 16px 120px; }
+  h1 { font-size: 20px; margin: 0 0 14px; letter-spacing: -.01em; }
+  h1 small { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; box-shadow: var(--shadow); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input[type=text], input[type=number], input[type=url] {
+    background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; font: inherit; min-width: 0; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  #url { flex: 1 1 360px; }
+  button { font: inherit; border-radius: 8px; border: 1px solid var(--line); background: var(--chip); color: var(--text);
+    padding: 8px 12px; cursor: pointer; white-space: nowrap; }
+  button:hover { filter: brightness(.97); }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  label.opt { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+  details { margin-top: 10px; color: var(--muted); }
+  details summary { cursor: pointer; }
+  details .row { margin-top: 8px; }
+  #proxies { flex: 1 1 360px; }
+  .status { margin: 14px 2px; color: var(--muted); min-height: 21px; }
+  .status.err { color: var(--danger); }
+  .toolbar { position: sticky; top: 0; z-index: 5; margin: 0 -16px; padding: 10px 16px; background: var(--bg);
+    border-bottom: 1px solid var(--line); }
+  .toolbar .grow { flex: 1; }
+  .count { font-weight: 600; }
+  .naming { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+  .naming label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+  code { background: var(--chip); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-top: 14px; }
+  .card { position: relative; background: var(--panel); border: 2px solid var(--line); border-radius: 10px; overflow: hidden;
+    cursor: pointer; user-select: none; display: flex; flex-direction: column; }
+  .card.on { border-color: var(--accent); background: var(--sel); }
+  .thumb { aspect-ratio: 1; background: repeating-conic-gradient(var(--chip) 0 25%, transparent 0 50%) 0 0 / 16px 16px;
+    display: grid; place-items: center; overflow: hidden; }
+  .thumb img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+  .check { position: absolute; top: 8px; left: 8px; width: 22px; height: 22px; border-radius: 6px; background: rgba(255,255,255,.9);
+    border: 2px solid #888; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 13px; }
+  .card.on .check { background: var(--accent); border-color: var(--accent); }
+  .badge { position: absolute; top: 8px; right: 8px; font-size: 11px; padding: 1px 6px; border-radius: 99px;
+    background: rgba(0,0,0,.6); color: #fff; }
+  .meta { padding: 6px 8px 8px; font-size: 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .meta .dim { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta .fname { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--accent); }
+  .meta .fname:empty { display: none; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); border-top: 1px solid var(--line); z-index: 10; }
+  .bar .inner { max-width: 1280px; margin: 0 auto; padding: 12px 16px; }
+  #zipName { width: 200px; }
+  progress { width: 160px; height: 8px; }
+  #progText { color: var(--muted); }
+  .empty { text-align: center; color: var(--muted); padding: 60px 0; }
+  @media (max-width: 600px) {
+    .grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+    #zipName { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Image ZIP Downloader<small>웹페이지의 이미지를 골라 이름을 붙여 ZIP으로 저장</small></h1>
+
+  <form id="scanForm" class="panel">
+    <div class="row">
+      <input id="url" type="url" required placeholder="https://example.com/gallery"
+        value="https://ai-portrait-gallery.pages.dev/#hair=%E3%83%AD%E3%83%B3%E3%82%B0">
+      <button id="scanBtn" class="primary" type="submit">이미지 불러오기</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label class="opt"><input id="optScripts" type="checkbox" checked> 스크립트·JSON 속 이미지 경로도 찾기 (JS로 그리는 페이지용)</label>
+    </div>
+    <details>
+      <summary>CORS 프록시 설정</summary>
+      <p class="hint">브라우저는 다른 사이트의 내용을 바로 읽지 못하는 경우가 많습니다(CORS). 직접 요청이 실패하면 아래 프록시를 순서대로 시도합니다.
+        한 줄에 하나씩, 대상 주소가 들어갈 자리에 <code>{url}</code>(인코딩) 또는 <code>{raw}</code>(그대로)를 쓰세요. 입력한 내용은 이 브라우저에만 저장됩니다.</p>
+      <div class="row"><textarea id="proxies" rows="3" style="font:inherit;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%"></textarea></div>
+    </details>
+  </form>
+
+  <p id="status" class="status"></p>
+
+  <section id="result" hidden>
+    <div class="toolbar">
+      <div class="row">
+        <span class="count" id="count"></span>
+        <span class="grow"></span>
+        <label class="opt" id="hashWrap" hidden><input id="hashFilter" type="checkbox" checked> <span id="hashLabel"></span></label>
+        <label class="opt">최소 크기 <input id="minSize" type="number" min="0" value="50" style="width:70px">px</label>
+        <input id="search" type="text" placeholder="URL·설명 검색" style="width:160px">
+        <button type="button" id="selAll">모두 선택</button>
+        <button type="button" id="selNone">선택 해제</button>
+        <button type="button" id="selInvert">반전</button>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:14px">
+      <div class="naming">
+        <label>이름 규칙<input id="pattern" type="text" value="{name}_{n}"></label>
+        <label>이름 ({name})<input id="baseName" type="text" value="image"></label>
+        <label>시작 번호<input id="startNum" type="number" value="1" min="0"></label>
+        <label>번호 자릿수<input id="digits" type="number" value="3" min="1" max="8"></label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="opt"><input id="preferOriginal" type="checkbox" checked> 원본 이미지가 있으면 원본으로 받기</label>
+      </div>
+      <p class="hint">
+        사용 가능: <code>{name}</code> 이름, <code>{n}</code> 순번, <code>{orig}</code> 원래 파일명, <code>{alt}</code> 이미지 설명.
+        확장자는 자동으로 붙습니다. 선택한 순서가 아닌 목록 순서대로 번호가 매겨집니다. Shift+클릭으로 범위 선택.
+      </p>
+    </div>
+
+    <div id="grid" class="grid"></div>
+    <p id="empty" class="empty" hidden>조건에 맞는 이미지가 없습니다.</p>
+  </section>
+</div>
+
+<div class="bar" id="bar" hidden>
+  <div class="inner row">
+    <span id="selCount" class="count"></span>
+    <span style="flex:1"></span>
+    <progress id="prog" hidden></progress>
+    <span id="progText"></span>
+    <input id="zipName" type="text" placeholder="ZIP 파일 이름" value="images">
+    <button id="dlBtn" class="primary" type="button" disabled>ZIP 다운로드</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const IMG_EXT = /\.(png|jpe?g|gif|webp|avif|bmp|svg|ico|tiff?|jfif)(?:[?#]|$)/i;
+  const THUMBISH = /thumb|small|preview|_s\b|-s\b|\bsm\b|mini|tiny|low|lq/i;
+  const ORIGISH = /full|orig|large|big|raw|hd|master|source/i;
+  const DEFAULT_PROXIES = [
+    "https://api.allorigins.win/raw?url={url}",
+    "https://api.codetabs.com/v1/proxy?quest={raw}",
+    "https://cors.eu.org/{raw}",
+  ].join("\n");
+  const state = { url: "", items: [], selected: new Set(), lastClicked: -1, visible: [], hashConds: [] };
+
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  };
+  $("proxies").value = store.get("izd.proxies") ?? DEFAULT_PROXIES;
+  $("proxies").addEventListener("change", () => store.set("izd.proxies", $("proxies").value));
+
+  const setStatus = (msg, err) => { $("status").textContent = msg; $("status").classList.toggle("err", !!err); };
+  const fileNameOf = (u) => {
+    try { return decodeURIComponent(new URL(u).pathname.split("/").pop() || "").replace(/\.[a-z0-9]{2,5}$/i, ""); }
+    catch { return ""; }
+  };
+  const stemOf = (u) => fileNameOf(u).toLowerCase();
+  const shortUrl = (u) => { try { const x = new URL(u); return x.host + x.pathname; } catch { return u; } };
+  const absUrl = (u, base) => {
+    if (!u) return null;
+    try {
+      const x = new URL(u.trim().replace(/&amp;/g, "&").replace(/\\\//g, "/"), base);
+      return /^https?:$/.test(x.protocol) ? x.href : null;
+    } catch { return null; }
+  };
+
+  // ------------------------------------------------------------ fetching (direct, then proxies)
+  const proxyList = () => $("proxies").value.split("\n").map((s) => s.trim()).filter(Boolean);
+  const viaProxy = (tpl, url) => tpl.replace("{url}", encodeURIComponent(url)).replace("{raw}", url);
+  let workingProxy = null; // remembered per scan so later requests skip failing ones
+
+  async function smartFetch(url, { binary = false } = {}) {
+    const tries = [null, ...(workingProxy ? [workingProxy] : []), ...proxyList().filter((p) => p !== workingProxy)];
+    let lastErr;
+    for (const proxy of tries) {
+      try {
+        const res = await fetch(proxy ? viaProxy(proxy, url) : url, { credentials: "omit", referrerPolicy: "no-referrer" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const type = res.headers.get("content-type") || "";
+        // SPA hosts often answer missing files with their HTML shell and status 200.
+        if (binary && /^text\/html/i.test(type)) throw new Error("이미지가 아닌 HTML 응답");
+        if (proxy) workingProxy = proxy;
+        return { res, type, via: proxy };
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr || new Error("요청 실패");
+  }
+
+  // ------------------------------------------------------------ scanning
+  function largestFromSrcset(srcset) {
+    if (!srcset) return null;
+    let best = null, bestScore = -1;
+    srcset.split(",").forEach((part) => {
+      const [u, d] = part.trim().split(/\s+/);
+      const score = d ? parseFloat(d) * (d.endsWith("x") ? 1000 : 1) : 1;
+      if (u && score > bestScore) { best = u; bestScore = score; }
+    });
+    return best;
+  }
+
+  // Text of the enclosing {...} around a match, used for search and #hash filters.
+  function contextAround(text, start, end) {
+    const open = text.lastIndexOf("{", start);
+    const close = text.indexOf("}", end);
+    const s = open >= 0 && start - open < 800 ? open : Math.max(0, start - 150);
+    const e = close >= 0 && close - end < 800 ? close + 1 : Math.min(text.length, end + 150);
+    return { key: s, text: text.slice(s, e).replace(/\s+/g, " ").slice(0, 600) };
+  }
+
+  function scanScriptText(text, base, add, groupPrefix) {
+    const re = /(["'`])((?:https?:)?(?:\\?\/|\.{1,2}\/)?[^"'`\s<>(){}]+?\.(?:png|jpe?g|gif|webp|avif|bmp|svg|tiff?)(?:\?[^"'`\s]*)?)\1/gi;
+    let m;
+    while ((m = re.exec(text))) {
+      const url = absUrl(m[2], base);
+      if (!url) continue;
+      const ctx = contextAround(text, m.index, m.index + m[0].length);
+      add(url, { kind: "script", context: ctx.text, group: groupPrefix + ":" + ctx.key });
+    }
+  }
+
+  async function scan(pageUrl, withScripts) {
+    workingProxy = null;
+    const { res, via } = await smartFetch(pageUrl);
+    const html = await res.text();
+    const base = via ? pageUrl : res.url || pageUrl;
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const items = new Map();
+    const add = (src, extra = {}) => {
+      const url = absUrl(src, base);
+      if (!url || url.startsWith("data:")) return;
+      const prev = items.get(url);
+      if (prev) {
+        if (!prev.original && extra.original) prev.original = extra.original;
+        if (!prev.alt && extra.alt) prev.alt = extra.alt;
+        if (!prev.context && extra.context) prev.context = extra.context;
+        if (!prev.group && extra.group) prev.group = extra.group;
+        return;
+      }
+      items.set(url, { src: url, original: null, alt: "", context: "", group: "", w: 0, h: 0, kind: "img", ...extra });
+    };
+
+    doc.querySelectorAll("img").forEach((img) => {
+      const src = largestFromSrcset(img.getAttribute("srcset") || img.getAttribute("data-srcset")) ||
+        img.getAttribute("data-src") || img.getAttribute("data-original") || img.getAttribute("data-lazy-src") || img.getAttribute("src");
+      const a = img.closest("a[href]");
+      const link = a && IMG_EXT.test(a.getAttribute("href")) ? absUrl(a.getAttribute("href"), base) : null;
+      add(src, { alt: (img.getAttribute("alt") || img.getAttribute("title") || "").trim(), original: link,
+        w: Number(img.getAttribute("width")) || 0, h: Number(img.getAttribute("height")) || 0 });
+    });
+    doc.querySelectorAll("picture source[srcset]").forEach((s) => add(largestFromSrcset(s.getAttribute("srcset")), { kind: "source" }));
+    const linked = new Set([...items.values()].map((i) => i.original).filter(Boolean));
+    doc.querySelectorAll("a[href]").forEach((a) => {
+      const h = absUrl(a.getAttribute("href"), base);
+      if (h && IMG_EXT.test(h) && !linked.has(h)) add(h, { kind: "link", alt: (a.textContent || "").trim().slice(0, 80) });
+    });
+    doc.querySelectorAll("meta[property='og:image'], meta[name='twitter:image']").forEach((m) => add(m.getAttribute("content"), { kind: "meta" }));
+    const cssUrls = (css) => { const re = /url\(\s*["']?([^"')]+)["']?\s*\)/g; let m; while ((m = re.exec(css))) if (IMG_EXT.test(m[1])) add(m[1], { kind: "background" }); };
+    doc.querySelectorAll("[style]").forEach((el) => cssUrls(el.getAttribute("style")));
+    doc.querySelectorAll("style").forEach((el) => cssUrls(el.textContent));
+
+    let scriptCount = 0;
+    if (withScripts) {
+      doc.querySelectorAll("script:not([src])").forEach((s, i) => scanScriptText(s.textContent, base, add, "inline" + i));
+      const host = new URL(base).host;
+      const srcs = [...doc.querySelectorAll("script[src]")].map((s) => absUrl(s.getAttribute("src"), base))
+        .filter((u) => u && new URL(u).host === host).slice(0, 20);
+      setStatus(`페이지 분석 중… 스크립트 ${srcs.length}개 확인`);
+      await Promise.all(srcs.map(async (u) => {
+        try {
+          const { res } = await smartFetch(u);
+          const text = await res.text();
+          if (text.length > 20e6) return;
+          scanScriptText(text, base, add, u);
+          scriptCount++;
+        } catch {}
+      }));
+    }
+
+    pairOriginals([...items.values()]);
+    const list = [...items.values()].filter((it) => !it.hiddenAsOriginal);
+    return { title: (doc.querySelector("title")?.textContent || "").trim(), items: list, scriptCount, via };
+  }
+
+  // Thumbnail + full-size versions of one image → show the thumbnail, download the original.
+  function pairOriginals(all) {
+    const pair = (group) => {
+      const free = group.filter((i) => !i.original && !i.hiddenAsOriginal);
+      if (free.length !== 2) return;
+      let [a, b] = free;
+      const score = (i) => (ORIGISH.test(i.src) ? 2 : 0) - (THUMBISH.test(i.src) ? 2 : 0);
+      if (score(a) === score(b)) return;
+      if (score(a) > score(b)) [a, b] = [b, a];
+      a.original = b.src;
+      b.hiddenAsOriginal = true;
+      if (!a.context) a.context = b.context;
+    };
+    const byGroup = new Map(), byStem = new Map();
+    all.forEach((i) => {
+      if (i.group) (byGroup.get(i.group) || byGroup.set(i.group, []).get(i.group)).push(i);
+      const st = stemOf(i.src);
+      if (st) (byStem.get(st) || byStem.set(st, []).get(st)).push(i);
+    });
+    byGroup.forEach(pair);
+    byStem.forEach(pair);
+    const originals = new Set(all.map((i) => i.original).filter(Boolean));
+    all.forEach((i) => { if (originals.has(i.src) && i.kind !== "img") i.hiddenAsOriginal = true; });
+  }
+
+  function readHashConds(u) {
+    try {
+      const h = new URL(u).hash.replace(/^#!?\/?/, "");
+      if (!h.includes("=")) return [];
+      return [...new URLSearchParams(h)].filter(([k, v]) => k && v);
+    } catch { return []; }
+  }
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  $("scanForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const url = $("url").value.trim();
+    $("scanBtn").disabled = true;
+    setStatus("페이지를 불러오는 중…");
+    try {
+      const data = await scan(url, $("optScripts").checked);
+      state.url = url;
+      state.items = data.items.map((it, i) => ({ ...it, idx: i }));
+      state.selected.clear();
+      state.lastClicked = -1;
+      state.hashConds = readHashConds(url).map(([k, v]) => ({
+        label: `${k}=${v}`,
+        re: new RegExp(`["']?${esc(k)}["']?\\s*[:=]\\s*["']${esc(v)}["']`),
+      }));
+      $("hashWrap").hidden = !state.hashConds.length;
+      $("hashLabel").textContent = "주소 조건 #" + state.hashConds.map((c) => c.label).join(" & ");
+      if (data.title && $("baseName").value === "image") $("baseName").value = data.title.slice(0, 40);
+      if (data.title && $("zipName").value === "images") $("zipName").value = data.title.slice(0, 60);
+      setStatus(`“${data.title || shortUrl(url)}”에서 이미지 ${data.items.length}개를 찾았습니다.` +
+        (data.scriptCount ? ` (스크립트 ${data.scriptCount}개 포함)` : "") +
+        (data.via ? ` · 프록시 사용: ${shortUrl(data.via)}` : ""));
+      $("result").hidden = false;
+      $("bar").hidden = false;
+      render();
+    } catch (err) {
+      setStatus("불러오기 실패: " + err.message + " — 사이트가 CORS를 막고 있다면 ‘CORS 프록시 설정’에서 다른 프록시를 넣어 보세요.", true);
+    } finally {
+      $("scanBtn").disabled = false;
+    }
+  });
+
+  // ------------------------------------------------------------ list
+  function passesFilter(it) {
+    const min = Number($("minSize").value) || 0;
+    if (it.w && it.h && (it.w < min || it.h < min)) return false;
+    if (state.hashConds.length && $("hashFilter").checked && !state.hashConds.every((c) => c.re.test(it.context))) return false;
+    const q = $("search").value.trim().toLowerCase();
+    if (q && !(it.src + " " + (it.original || "") + " " + it.alt + " " + it.context).toLowerCase().includes(q)) return false;
+    return true;
+  }
+
+  const sizeText = (it) => (it.w ? `${it.w}×${it.h}` : "크기 확인 중");
+  const BADGES = { background: "배경", link: "링크", meta: "메타", source: "source", script: "스크립트" };
+
+  function render() {
+    const grid = $("grid");
+    grid.textContent = "";
+    state.visible = state.items.filter(passesFilter);
+    const frag = document.createDocumentFragment();
+    state.visible.forEach((it, vi) => {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.dataset.idx = it.idx;
+      card.dataset.vi = vi;
+
+      const thumb = document.createElement("div");
+      thumb.className = "thumb";
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      img.referrerPolicy = "no-referrer";
+      img.alt = it.alt || "";
+      img.src = it.src;
+      const dim = document.createElement("span");
+      dim.className = "dim";
+      dim.textContent = sizeText(it);
+      img.onload = () => { if (!it.w) { it.w = img.naturalWidth; it.h = img.naturalHeight; dim.textContent = sizeText(it); } };
+      img.onerror = () => { dim.textContent = "미리보기 불가"; };
+      thumb.appendChild(img);
+
+      const check = document.createElement("span");
+      check.className = "check";
+      check.textContent = "✓";
+
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const fname = document.createElement("span");
+      fname.className = "fname";
+      const src = document.createElement("span");
+      src.className = "dim";
+      src.textContent = it.alt || fileNameOf(it.original || it.src);
+      src.title = (it.original ? "원본: " + it.original + "\n" : "") + it.src + (it.context ? "\n\n" + it.context : "");
+      meta.append(fname, dim, src);
+      card.append(thumb, check, meta);
+
+      const label = it.original ? "원본" : BADGES[it.kind];
+      if (label) {
+        const b = document.createElement("span");
+        b.className = "badge"; b.textContent = label;
+        if (it.original) b.title = it.original;
+        card.appendChild(b);
+      }
+      frag.appendChild(card);
+    });
+    grid.appendChild(frag);
+    $("empty").hidden = state.visible.length > 0;
+    $("count").textContent = `표시 ${state.visible.length} / 전체 ${state.items.length}`;
+    refreshSelection();
+  }
+
+  $("grid").addEventListener("click", (e) => {
+    const card = e.target.closest(".card");
+    if (!card) return;
+    const vi = Number(card.dataset.vi);
+    const idx = Number(card.dataset.idx);
+    if (e.shiftKey && state.lastClicked >= 0) {
+      const on = !state.selected.has(idx);
+      const [a, b] = [Math.min(vi, state.lastClicked), Math.max(vi, state.lastClicked)];
+      for (let i = a; i <= b; i++) on ? state.selected.add(state.visible[i].idx) : state.selected.delete(state.visible[i].idx);
+    } else {
+      state.selected.has(idx) ? state.selected.delete(idx) : state.selected.add(idx);
+    }
+    state.lastClicked = vi;
+    refreshSelection();
+  });
+
+  $("selAll").onclick = () => { state.visible.forEach((it) => state.selected.add(it.idx)); refreshSelection(); };
+  $("selNone").onclick = () => { state.selected.clear(); refreshSelection(); };
+  $("selInvert").onclick = () => {
+    state.visible.forEach((it) => (state.selected.has(it.idx) ? state.selected.delete(it.idx) : state.selected.add(it.idx)));
+    refreshSelection();
+  };
+  ["minSize", "search", "hashFilter"].forEach((id) => $(id).addEventListener("input", () => { state.lastClicked = -1; render(); }));
+  ["pattern", "baseName", "startNum", "digits", "preferOriginal"].forEach((id) => $(id).addEventListener("input", refreshSelection));
+
+  // ------------------------------------------------------------ naming
+  function plannedFiles() {
+    const pattern = $("pattern").value || "{name}_{n}";
+    const base = $("baseName").value.trim() || "image";
+    let n = Number($("startNum").value) || 0;
+    const digits = Math.min(Math.max(Number($("digits").value) || 1, 1), 8);
+    const preferOriginal = $("preferOriginal").checked;
+    // Selected items in list order (only those currently visible count).
+    return state.items.filter((it) => state.selected.has(it.idx) && passesFilter(it)).map((it) => {
+      const url = preferOriginal && it.original ? it.original : it.src;
+      const name = pattern
+        .replace(/\{name\}/g, base)
+        .replace(/\{n\}/g, String(n++).padStart(digits, "0"))
+        .replace(/\{orig\}/g, fileNameOf(url) || "image")
+        .replace(/\{alt\}/g, (it.alt || "").slice(0, 60) || "image");
+      return { idx: it.idx, url, name };
+    });
+  }
+
+  function refreshSelection() {
+    const plan = plannedFiles();
+    const byIdx = new Map(plan.map((p) => [p.idx, p]));
+    document.querySelectorAll("#grid .card").forEach((card) => {
+      const p = byIdx.get(Number(card.dataset.idx));
+      card.classList.toggle("on", !!p);
+      const f = card.querySelector(".fname");
+      f.textContent = p ? p.name : "";
+      f.title = p ? p.name + "\n← " + p.url : "";
+    });
+    $("selCount").textContent = `${plan.length}개 선택됨`;
+    $("dlBtn").disabled = plan.length === 0;
+  }
+
+  // ------------------------------------------------------------ download
+  const EXT_BY_TYPE = {
+    "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp", "image/avif": "avif",
+    "image/svg+xml": "svg", "image/bmp": "bmp", "image/x-icon": "ico", "image/vnd.microsoft.icon": "ico", "image/tiff": "tif",
+  };
+  function extFrom(type, url) {
+    const t = (type || "").split(";")[0].trim().toLowerCase();
+    if (EXT_BY_TYPE[t]) return EXT_BY_TYPE[t];
+    const m = /\.([a-z0-9]{2,5})(?:[?#]|$)/i.exec(new URL(url).pathname);
+    return m ? m[1].toLowerCase().replace("jpeg", "jpg") : "bin";
+  }
+  const sanitizeName = (name) => String(name || "").replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").replace(/\s+/g, " ")
+    .trim().replace(/^\.+/, "").slice(0, 150) || "image";
+
+  $("dlBtn").addEventListener("click", async () => {
+    if (typeof JSZip === "undefined") { setStatus("ZIP 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.", true); return; }
+    const files = plannedFiles();
+    if (!files.length) return;
+    const zipName = sanitizeName($("zipName").value.trim() || "images").replace(/\.zip$/i, "") + ".zip";
+    $("dlBtn").disabled = true;
+    const prog = $("prog");
+    prog.hidden = false;
+    prog.max = files.length;
+    prog.value = 0;
+
+    const zip = new JSZip();
+    const used = new Set();
+    const uniqueName = (base, ext) => {
+      let name = `${base}.${ext}`, n = 2;
+      while (used.has(name.toLowerCase())) name = `${base} (${n++}).${ext}`;
+      used.add(name.toLowerCase());
+      return name;
+    };
+    const failed = [];
+    let done = 0, bytes = 0;
+    const tick = () => {
+      prog.value = done;
+      $("progText").textContent = `${done}/${files.length}개 받는 중… ${(bytes / 1048576).toFixed(1)} MB`;
+    };
+    tick();
+
+    try {
+      let next = 0;
+      const worker = async () => {
+        while (next < files.length) {
+          const i = next++;
+          const f = files[i];
+          try {
+            const { res, type } = await smartFetch(f.url, { binary: true });
+            const blob = await res.blob();
+            bytes += blob.size;
+            const base = sanitizeName(f.name.replace(/\.[a-z0-9]{2,5}$/i, ""));
+            // Reserve names in list order even though downloads finish out of order.
+            f.zipPath = { base, ext: extFrom(type || blob.type, f.url), blob };
+          } catch (e) {
+            failed.push(`${f.name}\t${f.url}\t${e.message}`);
+          }
+          done++;
+          tick();
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(6, files.length) }, worker));
+      files.forEach((f) => { if (f.zipPath) zip.file(uniqueName(f.zipPath.base, f.zipPath.ext), f.zipPath.blob); });
+      if (failed.length) zip.file("_failed.txt", "다운로드 실패 목록\n\n" + failed.join("\n") + "\n");
+      if (failed.length === files.length) throw new Error("모든 이미지 다운로드에 실패했습니다 (CORS 차단일 수 있습니다).");
+
+      // Images are already compressed; STORE skips pointless recompression.
+      const blob = await zip.generateAsync({ type: "blob", compression: "STORE" }, (meta) => {
+        $("progText").textContent = `ZIP 만드는 중… ${meta.percent.toFixed(0)}%`;
+      });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = zipName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      $("progText").textContent = `완료: ${zipName} (${(blob.size / 1048576).toFixed(1)} MB)` + (failed.length ? ` · 실패 ${failed.length}개` : "");
+    } catch (err) {
+      $("progText").textContent = "";
+      setStatus("ZIP 생성 실패: " + err.message, true);
+    } finally {
+      prog.hidden = true;
+      $("dlBtn").disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>
