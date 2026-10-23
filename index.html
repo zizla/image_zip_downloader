@@ -152,7 +152,9 @@
   const IMG_EXT = /\.(png|jpe?g|gif|webp|avif|bmp|svg|ico|tiff?|jfif)(?:[?#]|$)/i;
   const THUMBISH = /thumb|small|preview|_s\b|-s\b|\bsm\b|mini|tiny|low|lq/i;
   const ORIGISH = /full|orig|large|big|raw|hd|master|source/i;
+  // Jina Reader renders the page in a real browser and returns HTML; it cannot relay image bytes, hence "text".
   const DEFAULT_PROXIES = [
+    "https://r.jina.ai/{raw} | X-Return-Format: html | text",
     "https://api.allorigins.win/raw?url={url}",
     "https://api.codetabs.com/v1/proxy?quest={raw}",
     "https://cors.eu.org/{raw}",
@@ -163,8 +165,9 @@
     get(k) { try { return localStorage.getItem(k); } catch { return null; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch {} },
   };
-  $("proxies").value = store.get("izd.proxies") ?? DEFAULT_PROXIES;
-  $("proxies").addEventListener("change", () => store.set("izd.proxies", $("proxies").value));
+  const PROXY_KEY = "izd.proxies.v2";
+  $("proxies").value = store.get(PROXY_KEY) ?? DEFAULT_PROXIES;
+  $("proxies").addEventListener("change", () => store.set(PROXY_KEY, $("proxies").value));
 
   const setStatus = (msg, err) => { $("status").textContent = msg; $("status").classList.toggle("err", !!err); };
   const fileNameOf = (u) => {
@@ -182,25 +185,42 @@
   };
 
   // ------------------------------------------------------------ fetching (direct, then proxies)
-  const proxyList = () => $("proxies").value.split("\n").map((s) => s.trim()).filter(Boolean);
+  // One proxy per line: "template | Header: value | text" ("text" = pages only, not image bytes).
+  const proxyList = () => $("proxies").value.split("\n").map((s) => s.trim()).filter(Boolean).map((line) => {
+    const [tpl, ...opts] = line.split("|").map((s) => s.trim());
+    const headers = {};
+    let textOnly = false;
+    opts.forEach((o) => {
+      const i = o.indexOf(":");
+      if (i > 0) headers[o.slice(0, i).trim()] = o.slice(i + 1).trim();
+      else if (o.toLowerCase() === "text") textOnly = true;
+    });
+    return { tpl, headers, textOnly, host: shortUrl(tpl.replace(/\{(url|raw)\}/g, "")).split("/")[0] };
+  });
   const viaProxy = (tpl, url) => tpl.replace("{url}", encodeURIComponent(url)).replace("{raw}", url);
-  let workingProxy = null; // remembered per scan so later requests skip failing ones
+  let workingProxy = { text: null, binary: null }; // remembered per scan so later requests skip failing ones
 
   async function smartFetch(url, { binary = false } = {}) {
-    const tries = [null, ...(workingProxy ? [workingProxy] : []), ...proxyList().filter((p) => p !== workingProxy)];
-    let lastErr;
+    const kind = binary ? "binary" : "text";
+    const proxies = proxyList().filter((p) => !(binary && p.textOnly));
+    const known = proxies.find((p) => p.tpl === workingProxy[kind]);
+    const tries = [null, ...(known ? [known] : []), ...proxies.filter((p) => p !== known)];
+    const errors = [];
     for (const proxy of tries) {
       try {
-        const res = await fetch(proxy ? viaProxy(proxy, url) : url, { credentials: "omit", referrerPolicy: "no-referrer" });
+        const res = await fetch(proxy ? viaProxy(proxy.tpl, url) : url,
+          { credentials: "omit", referrerPolicy: "no-referrer", headers: proxy ? proxy.headers : {} });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const type = res.headers.get("content-type") || "";
         // SPA hosts often answer missing files with their HTML shell and status 200.
         if (binary && /^text\/html/i.test(type)) throw new Error("이미지가 아닌 HTML 응답");
-        if (proxy) workingProxy = proxy;
-        return { res, type, via: proxy };
-      } catch (e) { lastErr = e; }
+        if (proxy) workingProxy[kind] = proxy.tpl;
+        return { res, type, via: proxy ? proxy.host : null, rendered: !!(proxy && proxy.textOnly) };
+      } catch (e) {
+        errors.push(`${proxy ? proxy.host : "직접"}: ${e.message === "Failed to fetch" ? "CORS 차단 또는 연결 실패" : e.message}`);
+      }
     }
-    throw lastErr || new Error("요청 실패");
+    throw new Error(errors.join(", "));
   }
 
   // ------------------------------------------------------------ scanning
@@ -235,9 +255,19 @@
     }
   }
 
+  // CDN resizer URLs often carry the original as a query param (e.g. Tistory "?fname=https://…").
+  function originalFromQuery(url) {
+    try {
+      for (const [k, v] of new URL(url).searchParams) {
+        if (/^(fname|url|src|image|img|u|file)$/i.test(k) && /^https?:\/\//i.test(v) && v !== url) return v;
+      }
+    } catch {}
+    return null;
+  }
+
   async function scan(pageUrl, withScripts) {
-    workingProxy = null;
-    const { res, via } = await smartFetch(pageUrl);
+    workingProxy = { text: null, binary: null };
+    const { res, via, rendered } = await smartFetch(pageUrl);
     const html = await res.text();
     const base = via ? pageUrl : res.url || pageUrl;
     const doc = new DOMParser().parseFromString(html, "text/html");
@@ -271,12 +301,19 @@
       if (h && IMG_EXT.test(h) && !linked.has(h)) add(h, { kind: "link", alt: (a.textContent || "").trim().slice(0, 80) });
     });
     doc.querySelectorAll("meta[property='og:image'], meta[name='twitter:image']").forEach((m) => add(m.getAttribute("content"), { kind: "meta" }));
-    const cssUrls = (css) => { const re = /url\(\s*["']?([^"')]+)["']?\s*\)/g; let m; while ((m = re.exec(css))) if (IMG_EXT.test(m[1])) add(m[1], { kind: "background" }); };
+    // CDN image URLs often have no extension, so accept any url() that is not obviously a font/script.
+    const NOT_IMG = /\.(woff2?|ttf|otf|eot|css|js)(?:[?#]|$)/i;
+    const cssUrls = (css) => {
+      const re = /url\(\s*["']?([^"')]+)["']?\s*\)/g;
+      let m;
+      while ((m = re.exec(css))) if (!m[1].startsWith("#") && !NOT_IMG.test(m[1])) add(m[1], { kind: "background" });
+    };
     doc.querySelectorAll("[style]").forEach((el) => cssUrls(el.getAttribute("style")));
     doc.querySelectorAll("style").forEach((el) => cssUrls(el.textContent));
 
     let scriptCount = 0;
-    if (withScripts) {
+    // A rendering proxy already ran the scripts, and fetching each one through it would burn its rate limit.
+    if (withScripts && !rendered) {
       doc.querySelectorAll("script:not([src])").forEach((s, i) => scanScriptText(s.textContent, base, add, "inline" + i));
       const host = new URL(base).host;
       const srcs = [...doc.querySelectorAll("script[src]")].map((s) => absUrl(s.getAttribute("src"), base))
@@ -294,6 +331,7 @@
     }
 
     pairOriginals([...items.values()]);
+    items.forEach((it) => { if (!it.original) it.original = originalFromQuery(it.src); });
     const list = [...items.values()].filter((it) => !it.hiddenAsOriginal);
     return { title: (doc.querySelector("title")?.textContent || "").trim(), items: list, scriptCount, via };
   }
@@ -336,6 +374,8 @@
     e.preventDefault();
     const url = $("url").value.trim();
     $("scanBtn").disabled = true;
+    $("result").hidden = true;
+    $("bar").hidden = true;
     setStatus("페이지를 불러오는 중…");
     try {
       const data = await scan(url, $("optScripts").checked);
@@ -353,12 +393,12 @@
       if (data.title && $("zipName").value === "images") $("zipName").value = data.title.slice(0, 60);
       setStatus(`“${data.title || shortUrl(url)}”에서 이미지 ${data.items.length}개를 찾았습니다.` +
         (data.scriptCount ? ` (스크립트 ${data.scriptCount}개 포함)` : "") +
-        (data.via ? ` · 프록시 사용: ${shortUrl(data.via)}` : ""));
+        (data.via ? ` · 프록시 사용: ${data.via}` : ""));
       $("result").hidden = false;
       $("bar").hidden = false;
       render();
     } catch (err) {
-      setStatus("불러오기 실패: " + err.message + " — 사이트가 CORS를 막고 있다면 ‘CORS 프록시 설정’에서 다른 프록시를 넣어 보세요.", true);
+      setStatus("불러오기 실패 (" + err.message + ") — ‘CORS 프록시 설정’에서 다른 프록시를 넣어 보세요.", true);
     } finally {
       $("scanBtn").disabled = false;
     }
@@ -472,7 +512,7 @@
         .replace(/\{n\}/g, String(n++).padStart(digits, "0"))
         .replace(/\{orig\}/g, fileNameOf(url) || "image")
         .replace(/\{alt\}/g, (it.alt || "").slice(0, 60) || "image");
-      return { idx: it.idx, url, name };
+      return { idx: it.idx, url, fallback: url !== it.src ? it.src : null, name };
     });
   }
 
@@ -538,12 +578,20 @@
           const i = next++;
           const f = files[i];
           try {
-            const { res, type } = await smartFetch(f.url, { binary: true });
-            const blob = await res.blob();
+            let got, usedUrl = f.url;
+            try {
+              got = await smartFetch(f.url, { binary: true });
+            } catch (e) {
+              // Original blocked (e.g. no CORS)? Fall back to the version shown in the list.
+              if (!f.fallback) throw e;
+              usedUrl = f.fallback;
+              got = await smartFetch(f.fallback, { binary: true });
+            }
+            const blob = await got.res.blob();
             bytes += blob.size;
             const base = sanitizeName(f.name.replace(/\.[a-z0-9]{2,5}$/i, ""));
-            // Reserve names in list order even though downloads finish out of order.
-            f.zipPath = { base, ext: extFrom(type || blob.type, f.url), blob };
+            // Names are assigned in list order after all downloads finish out of order.
+            f.zipPath = { base, ext: extFrom(got.type || blob.type, usedUrl), blob };
           } catch (e) {
             failed.push(`${f.name}\t${f.url}\t${e.message}`);
           }
